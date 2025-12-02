@@ -89,7 +89,35 @@ autodoc_default_options = {
     'undoc-members': True,
     'exclude-members': '__weakref__'
 }
-autodoc_mock_imports = ['cupy', 'cupyx', 'scipy.sparse.linalg.dsolve.linsolve', 'sksparse', 'sksparse.cholmod']
+
+# Mock imports for dependencies not available on ReadTheDocs
+# This allows autodoc to document modules without actually importing all dependencies
+autodoc_mock_imports = [
+    # CUDA dependencies
+    'cupy',
+    'cupyx',
+    'cupyx.scipy',
+    'cupyx.scipy.sparse',
+    'cupyx.scipy.sparse.linalg',
+    # Numba (JIT compiler) - required by core modules
+    'numba',
+    # scikit-sparse (CHOLMOD solver)
+    'sksparse',
+    'sksparse.cholmod',
+    # Visualization dependencies
+    'k3d',
+    'vtk',
+    'matplotlib',
+    'matplotlib.pyplot',
+    'matplotlib.path',
+    'matplotlib.markers',
+    # Mesh generation
+    'pygmsh',
+    'gmsh',
+    # SciPy submodules that may cause issues
+    'scipy.sparse.linalg.dsolve',
+    'scipy.sparse.linalg.dsolve.linsolve',
+]
 
 # Autosummary settings
 autosummary_generate = False
