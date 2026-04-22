@@ -554,3 +554,235 @@ def plot_field_3D(
             update_from_cut(ugrid, [center[0], center[1], offset], [0, 0, 1], plt_vtk)
     update_from_cut(ugrid, [center[0], center[1], bbox[2].max()], [0, 0, 1], plt_vtk)
     return plot
+
+import os
+import asyncio
+import warnings
+import logging
+from k3d.colormaps import matplotlib_color_maps
+
+def _compute_depth_attribute(vertices, camera_pos, exponent=0.4):
+    cam = np.array(camera_pos[:3], dtype=np.float64)
+    tgt = np.array(camera_pos[3:6], dtype=np.float64)
+    view_dir = tgt - cam
+    view_dir /= np.linalg.norm(view_dir) + 1e-12
+
+    depths = np.dot(vertices - cam, view_dir)
+    d_min, d_max = depths.min(), depths.max()
+    if d_max == d_min:
+        return np.zeros_like(depths, dtype=np.float32)
+
+    attr = ((depths - d_min) / (d_max - d_min)) ** exponent
+    return attr.astype(np.float32)
+
+
+async def capture_solution_screenshots_3D(nodes, elements, f, c, rho=None,
+                                          output_dir='screenshots', delay=2.0,
+                                          face_color=0x888888, force_color=0xff8300,
+                                          constraint_color=0xff6347):
+    """
+    Export K3D visualization to HTML and capture screenshots with Playwright (async),
+    with depth-based coloring (near vs far) baked into each view.
+    """
+    warnings.filterwarnings('ignore', category=UserWarning, module='traittypes')
+    logging.getLogger('k3d.helpers').setLevel(logging.ERROR)
+
+    if hasattr(nodes, 'get'):
+        nodes = nodes.get()
+    if hasattr(elements, 'get'):
+        elements = elements.get()
+    if f is not None and hasattr(f, 'get'):
+        f = f.get()
+    if c is not None and hasattr(c, 'get'):
+        c = c.get()
+    if rho is not None and hasattr(rho, 'get'):
+        rho = rho.get()
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    approx_elem_size = np.mean(
+        np.linalg.norm(nodes[elements[:, 1]] - nodes[elements[:, 0]], axis=1)
+    )
+
+    if rho is not None:
+        if rho.ndim > 1:
+            elements_ = []
+            for i in range(rho.shape[1]):
+                elements_.append(elements[rho[:, i] > 0.5])
+            elements = elements_
+        else:
+            elements = elements[rho > 0.5]
+
+    points = vtk.vtkPoints()
+    for node in nodes:
+        points.InsertNextPoint(node)
+
+    plot = k3d.plot(
+        height=1080,
+        camera_auto_fit=False,
+        grid_visible=False,
+        menu_visibility=False
+    )
+
+    surface_meshes = []
+
+    if rho is not None and rho.ndim > 1:
+        for j in range(rho.shape[1]):
+            if elements[j].size == 0:
+                continue
+
+            ugrid = vtk.vtkUnstructuredGrid()
+            ugrid.SetPoints(points)
+            element_size = elements[j].shape[1]
+
+            for element in elements[j]:
+                if element_size == 4:
+                    cell = vtk.vtkTetra()
+                elif element_size == 8:
+                    cell = vtk.vtkHexahedron()
+                else:
+                    raise ValueError("Unsupported element type")
+                for i in range(element_size):
+                    cell.GetPointIds().SetId(i, int(element[i]))
+                ugrid.InsertNextCell(cell.GetCellType(), cell.GetPointIds())
+
+            surface_filter = vtk.vtkDataSetSurfaceFilter()
+            surface_filter.SetInputData(ugrid)
+            surface_filter.Update()
+
+            surface = surface_filter.GetOutput()
+            vertices, indices = vtk_to_k3d(surface)
+
+            if len(vertices) == 0 or len(indices) == 0:
+                continue
+
+            mesh = k3d.mesh(
+                vertices,
+                indices,
+                attribute=np.zeros(vertices.shape[0], dtype=np.float32),
+                color_map=matplotlib_color_maps.viridis,
+                color_range=[0.0, 1.0]
+            )
+            surface_meshes.append((mesh, vertices))
+            plot += mesh
+    else:
+        ugrid = vtk.vtkUnstructuredGrid()
+        ugrid.SetPoints(points)
+        element_size = elements.shape[1]
+
+        for element in elements:
+            if element_size == 4:
+                cell = vtk.vtkTetra()
+            elif element_size == 8:
+                cell = vtk.vtkHexahedron()
+            else:
+                raise ValueError("Unsupported element type")
+            for i in range(element_size):
+                cell.GetPointIds().SetId(i, int(element[i]))
+            ugrid.InsertNextCell(cell.GetCellType(), cell.GetPointIds())
+
+        surface_filter = vtk.vtkDataSetSurfaceFilter()
+        surface_filter.SetInputData(ugrid)
+        surface_filter.Update()
+
+        surface = surface_filter.GetOutput()
+        vertices, indices = vtk_to_k3d(surface)
+
+        if len(vertices) > 0 and len(indices) > 0:
+            mesh = k3d.mesh(
+                vertices,
+                indices,
+                attribute=np.zeros(vertices.shape[0], dtype=np.float32),
+                color_map=matplotlib_color_maps.viridis,
+                color_range=[0.0, 1.0]
+            )
+            surface_meshes.append((mesh, vertices))
+            plot += mesh
+
+    if f is not None:
+        force_glyphs = create_force_glyphs(nodes, f, approx_elem_size * 4)
+        vertices_f, indices_f = vtk_to_k3d(force_glyphs)
+        if len(vertices_f) > 0 and len(indices_f) > 0:
+            plot += k3d.mesh(vertices_f, indices_f, color=force_color)
+
+    if c is not None:
+        bc_glyphs = create_bc_glyphs(nodes, c, approx_elem_size)
+        vertices_c, indices_c = vtk_to_k3d(bc_glyphs)
+        if len(vertices_c) > 0 and len(indices_c) > 0:
+            plot += k3d.mesh(vertices_c, indices_c, color=constraint_color)
+
+    bbox_min = nodes.min(axis=0)
+    bbox_max = nodes.max(axis=0)
+    center = (bbox_min + bbox_max) / 2.0
+    size = np.linalg.norm(bbox_max - bbox_min)
+    offset = size * 1.0
+
+    camera_presets = {
+        'bottom': [center[0], center[1] - offset, center[2], center[0], center[1], center[2], 0, 0, 1],
+        'top':    [center[0], center[1] + offset, center[2], center[0], center[1], center[2], 0, 0, 1],
+        'left':   [center[0] + offset, center[1], center[2], center[0], center[1], center[2], 0, 1, 0],
+        'right':  [center[0] - offset, center[1], center[2], center[0], center[1], center[2], 0, 1, 0],
+        'back':   [center[0], center[1], center[2] + offset, center[0], center[1], center[2], 0, 1, 0],
+        'front':  [center[0], center[1], center[2] - offset, center[0], center[1], center[2], 0, 1, 0],
+    }
+
+    print(f"\n📝 Exporting {len(camera_presets)} HTML files...")
+    html_files = {}
+
+    for view_name, camera_pos in camera_presets.items():
+        for mesh, vertices in surface_meshes:
+            attr = _compute_depth_attribute(vertices, camera_pos)
+            mesh.attribute = attr
+            mesh.color_range = [0.0, 1.0]
+
+        plot.camera = camera_pos
+        html_path = os.path.join(output_dir, f'{view_name}.html')
+
+        html_content = plot.get_snapshot()
+
+        css_hide_panel = """
+        <style>
+        .k3d-panel, .k3d-control-panel, .k3d-panel-container {
+            display: none !important;
+        }
+        </style>
+        """
+        html_content = html_content.replace('</head>', css_hide_panel + '</head>')
+
+        with open(html_path, 'w') as f_out:
+            f_out.write(html_content)
+
+        html_files[view_name] = html_path
+        print(f"✓ {view_name:15s} → {view_name}.html")
+
+    print(f"\n📸 Capturing screenshots from HTML...")
+    try:
+        from playwright.async_api import async_playwright
+
+        saved_files = {}
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={'width': 1920, 'height': 1080})
+
+            for view_name, html_path in html_files.items():
+                await page.goto(f'file://{os.path.abspath(html_path)}')
+                await page.wait_for_timeout(int(delay * 1000) + 1000)
+
+                canvas = await page.query_selector("canvas")
+                box = await canvas.bounding_box()
+                png_path = os.path.join(output_dir, f'{view_name}.png')
+                await page.screenshot(path=png_path, clip=box)
+
+                saved_files[view_name] = png_path
+                print(f"✓ {view_name:15s} → {view_name}.png")
+
+            await browser.close()
+
+        print(f"\n✨ Success! {len(saved_files)} high-quality screenshots captured")
+        return plot, camera_presets, saved_files
+
+    except ImportError:
+        print("\n⚠️  Playwright not installed. Install with:")
+        print("    pip install playwright")
+        print("    playwright install chromium")
+        return plot, camera_presets, html_files

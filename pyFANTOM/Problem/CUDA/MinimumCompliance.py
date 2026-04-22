@@ -212,7 +212,26 @@ class MinimumCompliance(Problem):
         GPU arrays are automatically transferred to CPU for visualization.
         """
         return self.FE.visualize_problem(**kwargs)
-    
+
+    def capture_solution_screenshots(self, output_dir='screenshots', delay=1.5, **kwargs):
+        rho = self.get_desvars()
+        if hasattr(rho, 'get'):
+            rho = rho.get()  # move from GPU to CPU if needed
+
+        if getattr(self, 'n_material', 1) > 1:
+            try:
+                rho = rho.reshape(self.n_material, -1).T
+            except Exception as e:
+                raise ValueError(f"Reshape failed for rho with shape {rho.shape} "
+                                 f"and n_material={self.n_material}: {e}")
+
+        return self.FE.visualize_screenshot_density(
+            rho,
+            output_dir=output_dir,
+            delay=delay,
+            **kwargs
+        )
+
     def visualize_solution(self, **kwargs):
         """
         Visualize optimized design (density distribution).
