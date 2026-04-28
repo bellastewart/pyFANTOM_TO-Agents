@@ -6,7 +6,7 @@ from ...geom.CUDA._mesh import (
 from ...stiffness.CUDA._FEA import StructuredStiffnessKernel, GeneralStiffnessKernel, UniformStiffnessKernel
 from ...solvers.CUDA._solvers import CG, GMRES, SPSOLVE, MultiGrid
 from ...visualizers._2d import plot_mesh_2D, plot_problem_2D, plot_field_2D
-from ...visualizers._3d import plot_problem_3D, plot_mesh_3D, plot_field_3D
+from ...visualizers._3d import plot_problem_3D, plot_mesh_3D, plot_field_3D, capture_solution_screenshots_3D
 from typing import Optional, Union, List
 from scipy.spatial import KDTree
 import cupy as np
@@ -315,6 +315,59 @@ class FiniteElement(FE):
                 ax=ax,
                 **kwargs)
             
+    ###NEW BELLA INSERT   
+    def visualize_screenshot_density(self, rho, ax=None, **kwargs):
+        import asyncio
+        import nest_asyncio
+        from sys import platform
+    
+        # Convert CuPy / GPU arrays to NumPy
+        if hasattr(rho, 'get'):
+            rho = rho.get()
+    
+        if self.is_3D:
+            try:
+                loop = asyncio.get_running_loop()
+                # Already running (e.g., in Jupyter)
+                nest_asyncio.apply()  # patch to allow re-entry
+                return loop.create_task(
+                    capture_solution_screenshots_3D(
+                        nodes=self.mesh.nodes.get(),
+                        elements=self.mesh.elements.get(),
+                        f=self.rhs.reshape(-1, self.mesh.dof).get(),
+                        c=self.kernel.constraints.reshape(-1, self.mesh.dof).get(),
+                        rho=rho,
+                        **kwargs
+                    )
+                )
+            except RuntimeError:
+                # Not in a running loop (normal script)
+                return asyncio.run(
+                    capture_solution_screenshots_3D(
+                        nodes=self.mesh.nodes.get(),
+                        elements=self.mesh.elements.get(),
+                        f=self.rhs.reshape(-1, self.mesh.dof).get(),
+                        c=self.kernel.constraints.reshape(-1, self.mesh.dof).get(),
+                        rho=rho,
+                        **kwargs
+                    )
+                )
+        else:
+            # 2D plotting branch
+            return plot_problem_2D(
+                self.mesh.nodes.get(),
+                self.mesh.elements.get(),
+                f=self.rhs.reshape(-1, self.mesh.dof).get(),
+                c=self.kernel.constraints.reshape(-1, self.mesh.dof).get(),
+                ax=ax,
+                rho=rho,
+                **kwargs
+            )
+
+
+### END BELLA INSERT   
+
+
     def visualize_density(self, rho, ax=None, **kwargs):
         """
         Visualize density distribution (optimization result).

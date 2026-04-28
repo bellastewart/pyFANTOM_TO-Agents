@@ -59,6 +59,9 @@ class FiniteElement:
         """Visualize a density field (design variable) on the mesh."""
         raise NotImplementedError("This method should be implemented by subclasses.")
     
+    def capture_solution_screenshots(self, rho, n_material, output_dir='screenshots', delay=1.5, **kwargs):
+        raise NotImplementedError("This method should be implemented by subclasses.")
+
     def visualize_field(self, **kwargs):
         """Visualize an arbitrary scalar or vector field defined on nodes or elements."""
         raise NotImplementedError("This method should be implemented by subclasses.")
